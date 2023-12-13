@@ -1,0 +1,142 @@
+#define BLYNK_TEMPLATE_ID "TMPL24PgpmiTH"
+#define BLYNK_TEMPLATE_NAME "ESP8266 Irrigação"
+#define BLYNK_AUTH_TOKEN "UO69H7JwVHrZlcwAKzO_VY80TEbUoNgf"
+
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+
+#define BLYNK_PRINT Serial  // Redireciona todas as mensagens Blynk para o Serial
+
+char networkSSID[] = "RODRIGO-GSM-2.4G";
+char networkPASS[] = "8554692101";
+
+#define LED_PIN 2
+#define PUMP_PIN 5  // Pino conectado ao relé (pino PWM)
+
+// Valores predefinidos para a umidade do solo
+const int DrySoilLevel = 0; // Representa a umidade quando o solo está seco
+const int WetSoilLevel = 1024; // Representa a umidade quando o solo está molhado
+
+// Nível de umidade desejado
+const int TargetMoistureLevel = 55; // Ajuste para o nível de umidade desejado
+
+// Parâmetros do controlador PID
+float kp = 15; // Ganho proporcional
+float ki = 0.1; // Ganho integral (comece com um valor pequeno)
+float kd = 40; // Ganho derivativo
+
+// Variáveis para o controlador PID
+float integral = 0; // Soma integral
+int lastError = 0; // Último valor de erro
+unsigned long lastTime = 0; // Último momento em que o controlador PID foi atualizado
+
+int currentMoisture = 0; // Valor atual da umidade do solo
+int moisturePercentage = 0; // Porcentagem calculada de umidade do solo
+
+int control = 790; // Declare a variável de controle em um escopo superior
+
+BlynkTimer timer;  // Objeto para gerenciar funções relacionadas ao tempo
+
+bool pumpRunning = false; // Sinalizador para rastrear o estado da bomba
+
+void printToSerialPlotter() {
+  currentMoisture = analogRead(A0);  // Lê a umidade atual do solo
+  
+  // Calcula a porcentagem de umidade com base nos níveis predefinidos
+  moisturePercentage = map(currentMoisture, WetSoilLevel, DrySoilLevel, 0, 100);
+
+  // Verifica se a umidade está abaixo do alvo
+  // Lógica do controlador PD
+  int error = TargetMoistureLevel - moisturePercentage; // Calcula o erro
+  unsigned long currentTime = millis(); // Obtém o tempo atual
+  float deltaTime = (currentTime - lastTime) / 1000.0; // Calcula a diferença de tempo em segundos
+  
+  // Calcula a derivada do erro
+  float derivative = (error - lastError) / deltaTime;
+
+  // Calcula a integral do erro
+  integral += error * deltaTime;
+  
+  // Calcula a variável de controle (valor PWM)
+  control = 790 + kp * error + ki * integral + kd * derivative;
+  
+  // Restringe a variável de controle aos limites do PWM do ESP8266
+  control = constrain(control, 0, 1023);
+  
+  // Atualiza o PWM da bomba - Inverte o controle para o relé ativo baixo
+  analogWrite(PUMP_PIN, 1023 - control);
+  
+  // Atualiza o último erro e o último tempo para a próxima iteração
+  lastError = error;
+  lastTime = currentTime;
+  
+  // Define a bandeira da bomba como em execução
+  pumpRunning = true;
+  //if (moisturePercentage > TargetMoistureLevel) {
+   // // Se a umidade estiver acima do alvo, desligue a bomba
+    //analogWrite(PUMP_PIN, 1023); // Define para o valor máximo para desligar a bomba
+    //pumpRunning = false;
+  //}
+
+  // Imprime dados para o Serial Plotter
+  printSerialData(currentMoisture, moisturePercentage, kp, kd, ki, pumpRunning ? 1 : 0);
+}
+
+void printSerialData(int currentMoisture, int moisturePercentage, float kp, float kd, float ki, int pumpState) {
+  // Imprime valores de dados com rótulos
+  Serial.print("Umidade_Atual:");
+  Serial.print(currentMoisture);
+  Serial.print(",");
+  Serial.print("Porcentagem_Umidade:");
+  Serial.print(moisturePercentage);
+  Blynk.virtualWrite(V1, moisturePercentage);
+  Serial.print(",");
+  Serial.print("Alvo_Umidade:");
+  Serial.print(TargetMoistureLevel);
+  Blynk.virtualWrite(V2, TargetMoistureLevel);
+  Serial.print(",");
+  Serial.print("Valor_Controle:");
+  Serial.println((control*100)/1023);
+  Blynk.virtualWrite(V3, (control*100)/1023);
+  Serial.print(",");
+  Serial.print("Proporcional_(kp):");
+  Serial.print(kp);
+  Blynk.virtualWrite(V4, kp);
+  Serial.print(",");
+  Serial.print("Derivativo_(kd):");
+  Serial.print(kd);
+  Blynk.virtualWrite(V5, kd);
+  Serial.print(",");
+  Serial.print("Integral_(ki):");
+  Serial.print(ki);
+  Blynk.virtualWrite(V6, ki);
+  Serial.print(",");
+  Serial.print("Estado_Bomba:");
+  Serial.print(pumpState);
+  Blynk.virtualWrite(V7, pumpState);
+  Blynk.virtualWrite(V8, !pumpState);
+}
+
+BLYNK_CONNECTED() {
+  // Ações a serem realizadas quando conectado ao Blynk
+}
+
+void setup() {
+  Serial.begin(115200);  // Inicia a comunicação serial com taxa de 115200 bauds
+  pinMode(PUMP_PIN, OUTPUT);  // Define o PUMP_PIN como saída para controlar a bomba
+  pinMode(LED_PIN, OUTPUT);
+  
+  // Garante que a bomba está desligada definindo o pino como ALTO (para relé ativo baixo)
+  digitalWrite(PUMP_PIN, HIGH);
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, networkSSID, networkPASS); // Conecta-se ao Blynk usando as credenciais de rede
+  moisturePercentage = TargetMoistureLevel;
+
+  delay(5000);
+  timer.setInterval(1000L, printToSerialPlotter); // Avalia a umidade do solo a cada 1 segundo e envia dados para o Serial Plotter
+}
+
+void loop() {
+  Blynk.run();  // Mantém a conexão com o Blynk e executa tarefas necessárias
+  timer.run();  // Verifica e executa tarefas agendadas
+}
